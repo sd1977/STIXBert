@@ -1,0 +1,219 @@
+# ============================================================================
+# STIXBert Configuration
+# ============================================================================
+# All settings for data retrieval, model architecture, training, evaluation,
+# optimization, and runtime. Override per-experiment by copying this file.
+
+# ----------------------------------------------------------------------------
+# Paths — resolved relative to Google Drive root (MyDrive/stixbert/)
+# On local runs, resolved relative to project root.
+# ----------------------------------------------------------------------------
+paths:
+  drive_project_dir: "stixbert"            # subdirectory under MyDrive/
+  raw_mitre: "data/raw/mitre_attack"
+  raw_threatfox: "data/raw/threatfox"
+  raw_digitalside: "data/raw/digitalside"
+  raw_taxii: "data/raw/taxii"
+  raw_misp: "data/raw/misp"
+  processed: "data/processed"
+  train: "data/train"
+  test: "data/test"
+  eval: "data/eval"
+  checkpoints: "checkpoints"
+  results: "results"
+
+# ----------------------------------------------------------------------------
+# Data — sources, retrieval, and preprocessing
+# ----------------------------------------------------------------------------
+data:
+  sources:
+    mitre_attack:
+      domains: ["enterprise", "mobile", "ics"]
+      use_taxii: false                       # true = TAXII server, false = GitHub
+    threatfox:
+      enabled: true
+      days: 30                               # how many days of IOC history
+    digitalside:
+      enabled: true
+    misp:
+      enabled: false                         # requires MISP instance
+      feeds: ["circl_osint", "botvrij"]
+    taxii:
+      enabled: false                         # generic TAXII feeds
+      servers: []                            # list of {url, collection_id} dicts
+  preprocessing:
+    include_scos: false                      # skip raw IOCs for pre-training
+    dedup_by_stix_id: true
+    min_edges_per_node: 0                    # prune isolated nodes (0 = keep all)
+  splits:
+    train_ratio: 0.8
+    test_ratio: 0.1
+    eval_ratio: 0.1
+    temporal_split: true                     # split by timestamp, not random
+    temporal_cutoff: "2025-06-01T00:00:00Z"  # train < cutoff, test/eval >= cutoff
+
+# ----------------------------------------------------------------------------
+# Model — HGT encoder architecture
+# ----------------------------------------------------------------------------
+model:
+  name: "stixbert"
+  version: "0.1.0"
+  encoder:
+    input_dim: 128
+    hidden_dim: 128
+    output_dim: 128
+    num_heads: 4
+    num_layers: 4
+    dropout: 0.1
+  feature_encoder:
+    text_model: "all-MiniLM-L6-v2"           # sentence-transformers model
+    text_dim: 384                             # output dim of text model
+    projection_dim: 128                       # project text embeddings to this dim
+  heads:
+    masked_node:
+      enabled: true
+      decoder_hidden: 128
+    link_prediction:
+      enabled: true
+      predictor_hidden: 128
+    temporal_ordering:
+      enabled: true
+      predictor_hidden: 128
+
+# ----------------------------------------------------------------------------
+# Training — pre-training loop
+# ----------------------------------------------------------------------------
+training:
+  pretrain:
+    num_epochs: 200
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
+    mask_ratio: 0.15                          # fraction of nodes to mask
+    grad_clip_norm: 1.0
+    checkpoint_every: 20                      # save checkpoint every N epochs
+    log_every: 5
+    early_stopping:
+      enabled: true
+      patience: 30                            # stop if no improvement for N epochs
+      min_delta: 1.0e-4                       # minimum loss improvement
+    loss_weights:
+      masked_node: 1.0
+      link_pred: 1.0
+      temporal: 0.5
+  finetune:
+    attack_classification:
+      epochs: 50
+      lr: 1.0e-3
+      freeze_encoder: false                   # true = linear probe only
+    reputation_scoring:
+      epochs: 30
+      lr: 5.0e-4
+    label_efficiency_fractions: [0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
+
+# ----------------------------------------------------------------------------
+# Grid Search — hyperparameter sweep
+# ----------------------------------------------------------------------------
+grid_search:
+  enabled: false
+  strategy: "grid"                            # grid | random | bayesian
+  n_trials: 50                                # for random/bayesian
+  parameters:
+    hidden_dim: [64, 128, 256]
+    num_heads: [2, 4, 8]
+    num_layers: [2, 4, 6]
+    lr: [5.0e-4, 1.0e-3, 2.0e-3]
+    mask_ratio: [0.10, 0.15, 0.25, 0.50]
+    dropout: [0.05, 0.1, 0.2]
+  metric: "total_loss"                        # metric to optimize
+  direction: "minimize"
+
+# ----------------------------------------------------------------------------
+# Optimization — scheduler, mixed precision, etc.
+# ----------------------------------------------------------------------------
+optimization:
+  optimizer: "adamw"                          # adam | adamw | sgd
+  scheduler:
+    type: "cosine"                            # cosine | linear | step | none
+    warmup_epochs: 10
+    min_lr: 1.0e-6
+    T_max: 200                                # for cosine scheduler
+  mixed_precision:
+    enabled: true                             # use torch.cuda.amp
+    dtype: "float16"                          # float16 | bfloat16
+  gradient_accumulation_steps: 1
+  compile_model: false                        # torch.compile (PyTorch 2.0+)
+
+# ----------------------------------------------------------------------------
+# Targets — success criteria for PoV
+# ----------------------------------------------------------------------------
+targets:
+  campaign_clustering:
+    ari: 0.85                                 # Adjusted Rand Index
+    nmi: 0.80                                 # Normalized Mutual Info
+  attack_classification:
+    accuracy_at_10pct_labels: 0.80            # accuracy with 10% labeled data
+    accuracy_at_100pct_labels: 0.93
+  cross_feed_dedup:
+    overlap_reduction: 0.40                   # 40%+ dedup rate
+  link_prediction:
+    precision_at_5: 0.60                      # precision@5 for infra prediction
+    lead_time_days: 3                         # days ahead of feed publication
+  pre_training:
+    max_total_loss: 0.50
+    label_efficiency_gain: 10.0               # 10x less labeled data vs scratch
+
+# ----------------------------------------------------------------------------
+# Regression Check — ensure model doesn't degrade across experiments
+# ----------------------------------------------------------------------------
+regression_check:
+  enabled: true
+  baseline_results_path: "results/baseline_metrics.json"
+  metrics:
+    - name: "attack_classification_accuracy"
+      threshold: 0.02                         # fail if accuracy drops by >2%
+      direction: "higher_is_better"
+    - name: "campaign_clustering_ari"
+      threshold: 0.05
+      direction: "higher_is_better"
+    - name: "total_pretrain_loss"
+      threshold: 0.10
+      direction: "lower_is_better"
+  on_failure: "warn"                          # warn | fail | block_push
+
+# ----------------------------------------------------------------------------
+# Runtime — hardware, environment, reproducibility
+# ----------------------------------------------------------------------------
+runtime:
+  device: "cuda"                              # cuda | cpu | mps
+  seed: 42
+  deterministic: true                         # torch.use_deterministic_algorithms
+  num_workers: 2                              # dataloader workers
+  pin_memory: true
+  colab:
+    mount_drive: true
+    runtime_type: "gpu"                       # gpu | tpu
+    preferred_gpu: "a100"                     # t4 | v100 | a100
+  logging:
+    level: "INFO"
+    format: "%(asctime)s %(name)s %(levelname)s: %(message)s"
+    save_to_file: true
+    log_file: "results/training.log"
+
+# ----------------------------------------------------------------------------
+# HuggingFace — model hub publishing
+# ----------------------------------------------------------------------------
+huggingface:
+  repo_id: "cisco-sbg/stixbert"              # HF repo (org/model)
+  private: true
+  commit_message: "STIXBert PoV checkpoint"
+  tags:
+    - "threat-intelligence"
+    - "stix"
+    - "graph-neural-network"
+    - "hgt"
+    - "cybersecurity"
+  model_card:
+    language: "en"
+    license: "apache-2.0"
+    library_name: "pytorch"
+    pipeline_tag: "graph-ml"
