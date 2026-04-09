@@ -162,11 +162,19 @@ def threatfox_to_stix(iocs: list[dict]) -> dict:
         if not pattern:
             continue
 
+        # ThreatFox uses "YYYY-MM-DD HH:MM:SS"; stix2 needs ISO 8601
+        raw_ts = ioc.get("first_seen_utc", "")
+        valid_from = (
+            raw_ts.replace(" ", "T") + "Z"
+            if raw_ts
+            else datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+
         indicator = Indicator(
             name=f"ThreatFox: {ioc_value}",
             pattern=pattern,
             pattern_type="stix",
-            valid_from=ioc.get("first_seen_utc", datetime.now().isoformat()),
+            valid_from=valid_from,
             labels=[threat_type] if threat_type else ["malicious-activity"],
         )
         stix_objects.append(indicator)
