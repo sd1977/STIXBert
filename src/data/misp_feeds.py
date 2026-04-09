@@ -141,9 +141,12 @@ def threatfox_to_stix(iocs: list[dict]) -> dict:
 
     for ioc in iocs:
         ioc_type = ioc.get("ioc_type", "")
-        ioc_value = ioc.get("ioc", "")
+        ioc_value = ioc.get("ioc", "").strip()
         malware_name = ioc.get("malware_printable", "")
         threat_type = ioc.get("threat_type", "")
+
+        if not ioc_value:
+            continue
 
         # Map ThreatFox type to STIX pattern
         pattern = None
