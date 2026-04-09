@@ -58,17 +58,21 @@ data:
 model:
   name: "stixbert"
   version: "0.1.0"
+  # Architecture rationale: 4 heads / 4 layers / 128d is a standard baseline for
+  # small-to-mid heterogeneous graphs (cf. OGB-LSC, HGB benchmarks). Start
+  # conservative and sweep via grid_search to find optimal values.
   encoder:
-    input_dim: 128
-    hidden_dim: 128
+    input_dim: 128                            # matches text projection dim
+    hidden_dim: 128                           # [64, 128, 256] swept in grid search
     output_dim: 128
-    num_heads: 4
-    num_layers: 4
-    dropout: 0.1
+    num_heads: 4                              # [2, 4, 8] swept in grid search
+    num_layers: 4                             # [2, 4, 6] swept in grid search
+    dropout: 0.1                              # [0.05, 0.1, 0.2] swept in grid search
   feature_encoder:
     text_model: "all-MiniLM-L6-v2"           # sentence-transformers model
     text_dim: 384                             # output dim of text model
     projection_dim: 128                       # project text embeddings to this dim
+    max_seq_length: 256                       # max tokens for text feature encoding
   heads:
     masked_node:
       enabled: true
@@ -85,16 +89,20 @@ model:
 # ----------------------------------------------------------------------------
 training:
   pretrain:
-    num_epochs: 200
-    lr: 1.0e-3
+    num_epochs: 200                           # Phase 2: full training (early stopping halts sooner)
+    batch_size: 64                            # default; overridden by HP search result
+    eval_batch_size: 128
+    lr: 1.0e-3                                # default; overridden by HP search result
     weight_decay: 1.0e-4
-    mask_ratio: 0.15                          # fraction of nodes to mask
+    mask_ratio: 0.15                          # fraction of nodes to mask (MLM-style)
     grad_clip_norm: 1.0
-    checkpoint_every: 20                      # save checkpoint every N epochs
+    gradient_accumulation_steps: 1
+    checkpoint_every: null                     # disabled — only best model saved
     log_every: 5
+    seed: 42
     early_stopping:
       enabled: true
-      patience: 30                            # stop if no improvement for N epochs
+      patience: 15                            # stop if no improvement for N epochs
       min_delta: 1.0e-4                       # minimum loss improvement
     loss_weights:
       masked_node: 1.0
@@ -102,27 +110,44 @@ training:
       temporal: 0.5
   finetune:
     attack_classification:
-      epochs: 50
+      epochs: 30
       lr: 1.0e-3
       freeze_encoder: false                   # true = linear probe only
     reputation_scoring:
-      epochs: 30
+      epochs: 20
       lr: 5.0e-4
     label_efficiency_fractions: [0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
+
+# ----------------------------------------------------------------------------
+# Cross-Validation
+# ----------------------------------------------------------------------------
+cv:
+  num_folds: 5                                # 5-fold CV for HP search
+  stratify_by: "node_type"                    # ensure balanced node types per fold
+
+# ----------------------------------------------------------------------------
+# Class Imbalance — STIX graphs are skewed: many indicators, few campaigns
+# ----------------------------------------------------------------------------
+class_imbalance:
+  analysis: true                              # log per-type distribution before training
+  strategy: "weighted"                        # weighted | focal | oversample | none
+  focal_gamma: 2.0                            # only if strategy=focal
 
 # ----------------------------------------------------------------------------
 # Grid Search — hyperparameter sweep
 # ----------------------------------------------------------------------------
 grid_search:
-  enabled: false
-  strategy: "grid"                            # grid | random | bayesian
-  n_trials: 50                                # for random/bayesian
+  enabled: true
+  strategy: "random"                          # random search more efficient for >3 params
+  n_trials: 20                                # budget for PoV
+  search_epochs: 5                            # short runs per trial (Phase 1)
   parameters:
     hidden_dim: [64, 128, 256]
     num_heads: [2, 4, 8]
     num_layers: [2, 4, 6]
     lr: [5.0e-4, 1.0e-3, 2.0e-3]
-    mask_ratio: [0.10, 0.15, 0.25, 0.50]
+    batch_size: [32, 64, 128]
+    mask_ratio: [0.10, 0.15, 0.25]
     dropout: [0.05, 0.1, 0.2]
   metric: "total_loss"                        # metric to optimize
   direction: "minimize"
@@ -136,11 +161,10 @@ optimization:
     type: "cosine"                            # cosine | linear | step | none
     warmup_epochs: 10
     min_lr: 1.0e-6
-    T_max: 200                                # for cosine scheduler
+    T_max: 200                                # match num_epochs for cosine scheduler
   mixed_precision:
     enabled: true                             # use torch.cuda.amp
-    dtype: "float16"                          # float16 | bfloat16
-  gradient_accumulation_steps: 1
+    dtype: "float16"                          # float16 | bfloat16 (A100 supports bf16)
   compile_model: false                        # torch.compile (PyTorch 2.0+)
 
 # ----------------------------------------------------------------------------
@@ -203,7 +227,7 @@ runtime:
 # HuggingFace — model hub publishing
 # ----------------------------------------------------------------------------
 huggingface:
-  repo_id: "cisco-sbg/stixbert"              # HF repo (org/model)
+  repo_id: "shidey/stixbert"                 # HF repo (user/model)
   private: true
   commit_message: "STIXBert PoV checkpoint"
   tags:

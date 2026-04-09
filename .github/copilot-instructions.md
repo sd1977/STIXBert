@@ -49,9 +49,17 @@ Keep both in sync when making changes.
 
 ## Key Libraries
 - PyTorch Geometric (`torch_geometric`) — HGTConv for heterogeneous graphs
-- `sentence-transformers` (`all-MiniLM-L6-v2`) — text feature encoding
+- `sentence-transformers` (`all-MiniLM-L6-v2`) — text feature encoding, max_seq_length=256
 - `stix2` — STIX object creation
-- `huggingface_hub` — model publishing (uses `HF_TOKEN` from `.env` or Colab Secrets)
+- `huggingface_hub` — model publishing to `shidey/stixbert` (uses `HF_TOKEN` from `.env` or Colab Secrets)
+
+## Training Configuration
+- **Epochs**: 50 (A100 converges fast; early stopping patience=10)
+- **Batch size**: 64 subgraphs (sweep: [32, 64, 128])
+- **Cross-validation**: 3-fold, stratified by node_type
+- **Grid search**: Random search, 20 trials over hidden_dim, num_heads, num_layers, lr, batch_size, mask_ratio, dropout
+- **Class imbalance**: STIX graphs are skewed (many indicators, few campaigns). Weighted sampling by default; focal loss optional.
+- **Architecture baseline**: 128d / 4 heads / 4 layers — standard for small-to-mid heterogeneous graphs (OGB-LSC, HGB benchmarks). All swept in grid search.
 
 ## Environment
 - macOS local dev, Python 3.9.6 system (services may need 3.11+)
